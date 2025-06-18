@@ -281,7 +281,6 @@
     </div>
    </form>
 
-   <!-- Custom Alert Modal -->
    <div id="alertModal" class="alert-modal">
     <div class="alert-content">
      <div class="bg-red-50 p-6 rounded-t-lg border-b border-red-200">
@@ -427,7 +426,6 @@
      }
     });
 
-    // Alert modal functions
     function showAlert(messages) {
      const modal = document.getElementById('alertModal');
      const messageDiv = document.getElementById('alertMessage');
@@ -451,14 +449,12 @@
      document.getElementById('alertModal').style.display = 'none';
     });
     
-    // Close modal when clicking outside
     document.getElementById('alertModal').addEventListener('click', function(e) {
      if (e.target === this) {
       this.style.display = 'none';
      }
     });
     
-    // Close modal with Escape key
     document.addEventListener('keydown', function(e) {
      if (e.key === 'Escape') {
       document.getElementById('alertModal').style.display = 'none';
