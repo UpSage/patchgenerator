@@ -1,93 +1,112 @@
 <?php
 
- $phpErrors = [];
- $patchName = 'module_patch';
+$phpErrors = [];
+$patchName = 'module_patch';
 
- if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-  $patchName = $_POST['patch_name'] ?? 'module_patch';
-  $uploadDir = sys_get_temp_dir() . '/patchgen/';
+    $patchName = $_POST['patch_name'] ?? 'module_patch';
+    $uploadDir = sys_get_temp_dir() . '/patchgen/';
+    $filePairs = [];
 
-  if (!file_exists($uploadDir)) {
-   mkdir($uploadDir, 0755, true);
-  }
-
-  $patchContent = '';
-  $filePairs = [];
-
-  foreach ($_FILES['file_pairs']['name'] as $index => $names) {
-   $originalName = basename($_FILES['file_pairs']['name'][$index]['original'] ?? '');
-   $modifiedName = basename($_FILES['file_pairs']['name'][$index]['modified'] ?? '');
-   $customPath = trim($_POST['file_pairs'][$index]['path'] ?? '');
-   if (!empty($_FILES['file_pairs']['name'][$index]['original'])) {
-    if (empty($_FILES['file_pairs']['name'][$index]['modified'])) {
-     $phpErrors[] = "Modified file is required for original file: {$originalName}";
-     continue;
+    if (!file_exists($uploadDir)) {
+        mkdir($uploadDir, 0755, true);
     }
-    if (empty($customPath)) {
-     $phpErrors[] = "Target path is required for file: {$originalName}";
-     continue;
-    }
-    if ($originalName !== $modifiedName) {
-     $phpErrors[] = "Filenames must match: '{$originalName}' and '{$modifiedName}'";
-     continue;
-    }
-    $originalTmp = $_FILES['file_pairs']['tmp_name'][$index]['original'];
-    $modifiedTmp = $_FILES['file_pairs']['tmp_name'][$index]['modified'];
-    $originalPath = $uploadDir . uniqid('orig_') . '_' . $originalName;
-    $modifiedPath = $uploadDir . uniqid('mod_') . '_' . $modifiedName;
 
-    if (move_uploaded_file($originalTmp, $originalPath) && move_uploaded_file($modifiedTmp, $modifiedPath)) {
-     $filePairs[] = [
-      'original' => $originalPath,
-      'modified' => $modifiedPath,
-      'path' => rtrim($customPath, '/'),
-      'filename' => $originalName
-     ];
-    } else {
-     $phpErrors[] = "Failed to process files: {$originalName}";
+    if (isset($_POST['file_pairs'])) {
+
+        foreach ($_POST['file_pairs'] as $index => $pairData) {
+
+            $originalName = basename($_FILES['file_pairs']['name'][$index]['original'] ?? '');
+            $modifiedName = basename($_FILES['file_pairs']['name'][$index]['modified'] ?? '');
+            $customPath = trim($pairData['path'] ?? '');
+
+            if (!empty($originalName)) {
+                $originalError = $_FILES['file_pairs']['error'][$index]['original'] ?? UPLOAD_ERR_NO_FILE;
+                $modifiedError = $_FILES['file_pairs']['error'][$index]['modified'] ?? UPLOAD_ERR_NO_FILE;
+
+                if ($originalError !== UPLOAD_ERR_OK) {
+                    $phpErrors[] = "Error uploading original file: {$originalName}";
+                    continue;
+                }
+
+                if (empty($modifiedName) || $modifiedError !== UPLOAD_ERR_OK) {
+                    $phpErrors[] = "Modified file is required and must upload correctly for original file: {$originalName}";
+                    continue;
+                }
+
+                if (empty($customPath)) {
+                    $phpErrors[] = "Target path is required for file: {$originalName}";
+                    continue;
+                }
+                
+                if ($originalName !== $modifiedName) {
+                    $phpErrors[] = "Filenames must match: '{$originalName}' and '{$modifiedName}'";
+                    continue;
+                }
+
+                $originalTmp = $_FILES['file_pairs']['tmp_name'][$index]['original'];
+                $modifiedTmp = $_FILES['file_pairs']['tmp_name'][$index]['modified'];
+
+                $originalPath = $uploadDir . uniqid('orig_') . '_' . $originalName;
+                $modifiedPath = $uploadDir . uniqid('mod_') . '_' . $modifiedName;
+
+                if (move_uploaded_file($originalTmp, $originalPath) && move_uploaded_file($modifiedTmp, $modifiedPath)) {
+                    $filePairs[] = [
+                        'original' => $originalPath,
+                        'modified' => $modifiedPath,
+                        'path' => rtrim($customPath, '/'),
+                        'filename' => $originalName
+                    ];
+                } else {
+                    $phpErrors[] = "Failed to move uploaded files: {$originalName}";
+                }
+            }
+        }
     }
-   }
-  }
-  if (empty($phpErrors)) {
-   foreach ($filePairs as $pair) {
-    $original = escapeshellarg($pair['original']);
-    $modified = escapeshellarg($pair['modified']);
-    $command = "git diff --no-index {$original} {$modified} 2>&1";
-    $output = shell_exec($command);
-    if ($output !== null) {
-     $newPath = $pair['path'] . '/' . $pair['filename'];
-     $cleanOutput = preg_replace([
-      '/^diff --git a\K.+?(?= b)/m',
-      '/^diff --git a.+? b\K.+$/m',
-      '/^--- a\K.+$/m',
-      '/^\+\+\+ b\K.+$/m'
-     ], [
-      '/' . $newPath,
-      '/' . $newPath,
-      '/' . $newPath,
-      '/' . $newPath
-     ], $output);
-     $patchContent .= $cleanOutput . "\n";
+
+    if (empty($phpErrors) && !empty($filePairs)) {
+        $patchContent = '';
+        foreach ($filePairs as $pair) {
+            $original = escapeshellarg($pair['original']);
+            $modified = escapeshellarg($pair['modified']);
+            $command = "git diff --no-index {$original} {$modified} 2>&1";
+            $output = shell_exec($command);
+            if ($output !== null) {
+                $newPath = $pair['path'] . '/' . $pair['filename'];
+                $cleanOutput = preg_replace([
+                    '/^diff --git a\K.+?(?= b)/m',
+                    '/^diff --git a.+? b\K.+$/m',
+                    '/^--- a\K.+$/m',
+                    '/^\+\+\+ b\K.+$/m'
+                ], [
+                    '/' . $newPath,
+                    '/' . $newPath,
+                    '/' . $newPath,
+                    '/' . $newPath
+                ], $output);
+                $patchContent .= $cleanOutput . "\n";
+            }
+            @unlink($pair['original']);
+            @unlink($pair['modified']);
+        }
+        if (!empty($patchContent)) {
+            $filename = preg_replace('/[^a-zA-Z0-9_-]/', '_', $patchName) . '.patch';
+            $tempFile = sys_get_temp_dir() . '/' . $filename;
+            file_put_contents($tempFile, $patchContent);
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename="' . $filename . '"');
+            header('Content-Length: ' . filesize($tempFile));
+            readfile($tempFile);
+            @unlink($tempFile);
+            exit;
+        } else {
+            $phpErrors[] = "No differences found between the provided files. No patch was generated.";
+        }
+    } elseif (empty($phpErrors) && empty($filePairs) && isset($_POST['file_pairs'])) {
+        $phpErrors[] = "No valid file pairs were submitted. Please add at least one pair.";
     }
-    @unlink($pair['original']);
-    @unlink($pair['modified']);
-   }
-   if (!empty($patchContent)) {
-    $filename = preg_replace('/[^a-zA-Z0-9_-]/', '_', $patchName) . '.patch';
-    $tempFile = sys_get_temp_dir() . '/' . $filename;
-    file_put_contents($tempFile, $patchContent);
-    header('Content-Type: application/octet-stream');
-    header('Content-Disposition: attachment; filename="' . $filename . '"');
-    header('Content-Length: ' . filesize($tempFile));
-    readfile($tempFile);
-    @unlink($tempFile);
-    exit;
-   } else {
-    $phpErrors[] = "No differences found between the provided files. No patch was generated.";
-   }
-  }
- }
+}
 
 ?>
 <!DOCTYPE html>
@@ -97,6 +116,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Patch Generator Pro</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
   <style>
    .tooltip {
     position: relative;
@@ -126,6 +146,11 @@
    }
    @keyframes fadeIn { from {opacity: 0;} to {opacity: 1;} }
    @keyframes slideIn { from {transform: translateY(-50px); opacity: 0;} to {transform: translateY(0); opacity: 1;} }
+   .drag-handle { cursor: move; }
+   .sortable-ghost {
+    opacity: 0.4;
+    background: #c0d8f0;
+   }
   </style>
  </head>
  <body class="bg-slate-100 min-h-screen">
@@ -215,8 +240,13 @@
      const currentIndex = pairCounter;
      
      newPair.innerHTML = `
-      <div class="flex justify-between items-center mb-4">
-       <h3 class="text-lg font-medium text-slate-800">File Pair #${currentIndex + 1}</h3>
+      <div class="flex justify-between items-start mb-4">
+        <div class="flex items-center">
+            <div class="drag-handle text-slate-400 hover:text-slate-600 p-1 mr-2">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg>
+            </div>
+            <h3 class="text-lg font-medium text-slate-800">File Pair</h3>
+        </div>
        <button type="button" class="remove-pair text-slate-500 hover:text-red-600 p-1 rounded-full hover:bg-red-100 transition-colors" title="Remove this file pair">
         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
        </button>
@@ -241,11 +271,39 @@
      updateUIAfterChange();
     };
 
-    const updateUIAfterChange = () => {
+    const reindexPairs = () => {
         const allPairs = document.querySelectorAll('.file-pair-group');
         allPairs.forEach((group, index) => {
             group.querySelector('h3').textContent = `File Pair #${index + 1}`;
+            
+            ['original', 'modified'].forEach(type => {
+                const fileInput = group.querySelector(`.${type}-file`);
+                const oldIndex = fileInput.id.split('_')[2];
+                
+                const label = fileInput.closest('.flex').querySelector('label');
+                label.htmlFor = `file_pairs_${index}_${type}`;
+
+                fileInput.id = `file_pairs_${index}_${type}`;
+                fileInput.name = `file_pairs[${index}][${type}]`;
+            });
+
+            const pathInput = group.querySelector('.target-path');
+            pathInput.name = `file_pairs[${index}][path]`;
         });
+    };
+
+    new Sortable(container, {
+        animation: 150,
+        handle: '.drag-handle',
+        ghostClass: 'sortable-ghost',
+        onEnd: function () {
+            reindexPairs();
+        }
+    });
+
+    const updateUIAfterChange = () => {
+        const allPairs = document.querySelectorAll('.file-pair-group');
+        reindexPairs();
         const removeButtons = document.querySelectorAll('.remove-pair');
         removeButtons.forEach(btn => {
             btn.disabled = allPairs.length <= 1;
